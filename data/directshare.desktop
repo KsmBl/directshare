@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DirectShare
+GenericName=Cable File Sharing
+Comment=Share the file systems of two computers over a direct Ethernet cable
+Exec=directshare
+Icon=directshare
+Terminal=false
+Categories=Network;FileTransfer;Utility;Qt;
+Keywords=share;files;cable;ethernet;transfer;network;

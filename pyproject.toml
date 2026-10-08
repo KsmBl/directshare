@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "directshare"
+version = "0.1.0"
+description = "Share the file systems of two Linux computers over a direct Ethernet cable"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.4"]
+
+[project.gui-scripts]
+directshare = "directshare.gui:main"
+
+[tool.setuptools]
+packages = ["directshare"]
+
+[tool.setuptools.package-data]
+directshare = ["assets/*"]
