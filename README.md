@@ -40,7 +40,7 @@ the cable, and both sides unmount right away.
 ## Installation
 
 ```bash
-git clone https://github.com/<you>/directshare.git
+git clone https://github.com/KsmBl/directshare.git
 cd directshare
 ./install.sh            # installs for your user into ~/.local and offers to install missing packages
 ```
