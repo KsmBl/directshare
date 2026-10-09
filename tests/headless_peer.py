@@ -59,9 +59,14 @@ class Listener:
         self.log("notice:", text)
 
 
-def check_mount(listener, marker_dir: Path, peer_marker: str) -> bool:
+def check_mount(listener, marker_dir: Path, peer_marker: str, expect_mode: str) -> bool:
     mnt = listener.info.mountpoint
     ok = True
+    if listener.info.mode == expect_mode:
+        listener.log(f"OK transport is {expect_mode}")
+    else:
+        listener.log(f"FAIL transport is {listener.info.mode}, expected {expect_mode}")
+        ok = False
     remote_marker = mnt / str(marker_dir).lstrip("/") / peer_marker
     deadline = time.time() + 10
     while not remote_marker.exists() and time.time() < deadline:
@@ -95,6 +100,7 @@ def main():
     ap.add_argument("--marker-dir", required=True, help="dir shared by the test; markers live here")
     ap.add_argument("--decline", action="store_true")
     ap.add_argument("--hold", action="store_true", help="initiator: don't stop, wait for the link to drop")
+    ap.add_argument("--expect-mode", choices=["ssh", "direct"], default="ssh")
     args = ap.parse_args()
     name = args.role
     peer_name = "responder" if name == "initiator" else "initiator"
@@ -123,7 +129,7 @@ def main():
             if not listener.connected.wait(40):
                 listener.log("FAIL not connected")
                 return 1
-            ok &= check_mount(listener, marker_dir, f"marker-{peer_name}")
+            ok &= check_mount(listener, marker_dir, f"marker-{peer_name}", args.expect_mode)
             listener.peer_mounted.wait(20)
             time.sleep(4)  # give the responder time to run its checks
             mountpoint = listener.info.mountpoint
@@ -148,7 +154,7 @@ def main():
             if not listener.connected.wait(60):
                 listener.log("FAIL not connected")
                 return 1
-            ok &= check_mount(listener, marker_dir, f"marker-{peer_name}")
+            ok &= check_mount(listener, marker_dir, f"marker-{peer_name}", args.expect_mode)
             mountpoint = listener.info.mountpoint
             if not listener.ended.wait(40):
                 listener.log("FAIL session did not end")

@@ -1,9 +1,12 @@
 """Detection and preparation of point-to-point links (the cable between the two computers).
 
 Everything above this module only needs a network interface with an IPv6 link-local
-address. Ethernet is the only link type wired up today; other cable types (USB-C via
-USB4/Thunderbolt networking or USB gadget networking) can be added as another
-LinkProvider without touching discovery, the control protocol or the file sharing.
+address, so each cable type is just a LinkProvider:
+
+- Ethernet: the built-in or USB Ethernet ports.
+- USB-C: USB4 / Thunderbolt 3+ host-to-host networking. When two such computers are
+  connected with a USB-C cable, the kernel's thunderbolt-net driver creates an Ethernet-like
+  interface (thunderbolt0) on both sides. That is all we need.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from pathlib import Path
 from . import config
 
 SYS_NET = Path("/sys/class/net")
+SYS_THUNDERBOLT = Path("/sys/bus/thunderbolt/devices")
 ARPHRD_ETHER = "1"
 
 
@@ -25,9 +29,10 @@ ARPHRD_ETHER = "1"
 class Link:
     name: str
     ifindex: int
-    kind: str  # "ethernet" (later also e.g. "usb-c")
+    kind: str  # "ethernet" or "usb-c"
     carrier: bool
     address: str | None  # IPv6 link-local address without scope, None if not (yet) usable
+    note: str = ""  # status for ports that have no interface yet (USB-C with nothing plugged in)
 
     @property
     def usable(self) -> bool:
@@ -66,8 +71,25 @@ def _make_link(name: str, kind: str) -> Link | None:
     return Link(name, int(entry["ifindex"]), kind, carrier, address if carrier else None)
 
 
+def _driver(dev: Path) -> str:
+    try:
+        return os.path.basename(os.path.realpath(dev / "device" / "driver"))
+    except OSError:
+        return ""
+
+
+def is_thunderbolt_net(dev: Path) -> bool:
+    return dev.name.startswith("thunderbolt") or _driver(dev) == "thunderbolt-net"
+
+
 class LinkProvider:
     kind = ""
+
+    def __init__(self, sys_net: Path = SYS_NET):
+        self.sys_net = sys_net
+
+    def _devices(self) -> list[Path]:
+        return sorted(self.sys_net.iterdir()) if self.sys_net.exists() else []
 
     def candidates(self) -> list[str]:
         raise NotImplementedError
@@ -83,7 +105,7 @@ class EthernetLinkProvider(LinkProvider):
 
     def candidates(self) -> list[str]:
         names = []
-        for dev in sorted(SYS_NET.iterdir()) if SYS_NET.exists() else []:
+        for dev in self._devices():
             if _read(dev / "type") != ARPHRD_ETHER:
                 continue
             if not (dev / "device").exists():  # virtual interface
@@ -92,30 +114,77 @@ class EthernetLinkProvider(LinkProvider):
                 continue
             if (dev / "bridge").exists() or (dev / "bonding").exists():
                 continue
-            if dev.name.startswith("thunderbolt"):
-                continue  # USB4/Thunderbolt networking belongs to a future USB-C provider
+            if is_thunderbolt_net(dev):
+                continue  # handled by UsbCLinkProvider
             names.append(dev.name)
         return names
 
 
-class OverrideLinkProvider(LinkProvider):
-    """DIRECTSHARE_IFACES=if1,if2 forces specific interfaces (e.g. veth pairs in tests)."""
+class UsbCLinkProvider(LinkProvider):
+    """USB4 / Thunderbolt host-to-host networking over a USB-C cable."""
 
-    kind = "ethernet"
+    kind = "usb-c"
 
-    def __init__(self, names: list[str]):
-        self.names = names
+    def __init__(self, sys_net: Path = SYS_NET, sys_thunderbolt: Path = SYS_THUNDERBOLT):
+        super().__init__(sys_net)
+        self.sys_thunderbolt = sys_thunderbolt
 
     def candidates(self) -> list[str]:
-        return self.names
+        return [dev.name for dev in self._devices() if is_thunderbolt_net(dev)]
+
+    def has_controller(self) -> bool:
+        return self.sys_thunderbolt.exists() and any(
+            d.name.startswith("domain") for d in self.sys_thunderbolt.iterdir())
+
+    def links(self) -> list[Link]:
+        links = super().links()
+        if not links and self.has_controller():
+            # The interface only appears once another computer is connected, so show the port anyway.
+            note = ("No computer connected" if driver_available()
+                    else "Kernel module thunderbolt_net is missing")
+            links = [Link("", -1, self.kind, False, None, note)]
+        return links
+
+
+_driver_available: bool | None = None
+
+
+def driver_available() -> bool:
+    global _driver_available
+    if _driver_available is None:
+        if Path("/sys/module/thunderbolt_net").exists():
+            _driver_available = True
+        else:
+            try:
+                _driver_available = subprocess.run(["modinfo", "-F", "name", "thunderbolt_net"],
+                                                   capture_output=True, timeout=3).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                _driver_available = True  # can't tell, don't show a false alarm
+    return _driver_available
+
+
+class OverrideLinkProvider(LinkProvider):
+    """DIRECTSHARE_IFACES=if1,if2:usb-c forces specific interfaces and kinds (e.g. veth pairs in tests)."""
+
+    def __init__(self, spec: str):
+        super().__init__()
+        self.kinds = {}
+        for item in filter(None, (part.strip() for part in spec.split(","))):
+            name, _, kind = item.partition(":")
+            self.kinds[name] = kind or "ethernet"
+
+    def candidates(self) -> list[str]:
+        return list(self.kinds)
+
+    def links(self) -> list[Link]:
+        return [link for name, kind in self.kinds.items() if (link := _make_link(name, kind))]
 
 
 def providers() -> list[LinkProvider]:
     override = os.environ.get("DIRECTSHARE_IFACES")
     if override:
-        return [OverrideLinkProvider([n.strip() for n in override.split(",") if n.strip()])]
-    # Future: append a UsbCLinkProvider here (thunderbolt-net / cdc_ncm interfaces).
-    return [EthernetLinkProvider()]
+        return [OverrideLinkProvider(override)]
+    return [EthernetLinkProvider(), UsbCLinkProvider()]
 
 
 def list_links() -> list[Link]:

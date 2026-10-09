@@ -19,7 +19,8 @@
 ## How it works for you
 
 1. Start **DirectShare** on both computers.
-2. Connect them with an Ethernet cable, directly. No switch or router needed.
+2. Connect them directly with an **Ethernet cable**, or with a **USB-C cable** if both have
+   USB4/Thunderbolt ports. That's [~4x faster](#usb-c--thunderbolt-fast-mode). No switch or router needed.
 3. On one computer, click **Share files**.
 4. The other computer shows a popup. Check that both screens show the same code, then click **Accept**.
 5. Each computer now has the other one's **entire file system** mounted at `~/DirectShare/<other-computer>`.
@@ -33,9 +34,9 @@ the cable, and both sides unmount right away.
 |:---:|:---:|:---:|
 | ![](docs/screenshots/01-searching.png) | ![](docs/screenshots/02-peer-found.png) | ![](docs/screenshots/03-waiting.png) |
 
-| The popup on the other computer | Connected (dark theme) |
+| The popup on the other computer | USB-C fast mode (dark theme) |
 |:---:|:---:|
-| ![](docs/screenshots/04-request.png) | ![](docs/screenshots/05-connected-dark.png) |
+| ![](docs/screenshots/04-request.png) | ![](docs/screenshots/06-usbc-fast-dark.png) |
 
 ## Installation
 
@@ -116,6 +117,8 @@ sequenceDiagram
 - The control port only answers peers on a wired interface's link-local network. Requests from
   Wi-Fi or routed networks are dropped.
 - Everything ends when the session ends: keys are deleted, servers stopped, mounts removed.
+- Over USB-C/Thunderbolt the transfer isn't encrypted, for speed. See
+  [fast mode](#usb-c--thunderbolt-fast-mode) for why that's safe on a point-to-point link.
 
 ## Troubleshooting
 
@@ -130,15 +133,44 @@ sequenceDiagram
 
 Logs of the file server for a running session are in `$XDG_RUNTIME_DIR/directshare/session-*/sshd.log`.
 
-## Roadmap: USB-C to USB-C
+## USB-C / Thunderbolt fast mode
 
-Everything above the link layer (discovery, handshake, file server, mounts) only needs a network
-interface with an IPv6 link-local address, and it doesn't care which kind of cable that is. Two
-computers with **USB4 / Thunderbolt** ports already get such an interface (`thunderbolt0`, from the
-`thunderbolt-net` driver) when you connect them with a USB-C cable. Supporting it means adding a
-`UsbCLinkProvider` in [`directshare/links.py`](directshare/links.py) that finds those interfaces and
-authorizes the Thunderbolt connection if needed. That's planned but not built yet. USB-C ports
-without USB4/Thunderbolt can't network host-to-host.
+If **both** computers have USB4 or Thunderbolt 3/4 ports, connect them with a USB-C cable.
+The kernel's `thunderbolt-net` driver turns the cable into a network link (`thunderbolt0`),
+DirectShare shows it as **USB-C**, and the share runs in **fast mode**.
+
+Over Ethernet the 1 Gbit/s cable is the limit (~115 MB/s). A Thunderbolt link carries
+20–40 Gbit/s, so there SSH encryption becomes the bottleneck. Fast mode skips it. Measured
+between two network namespaces on an i7-13850HX, reading and writing a 3 GB file through the mount:
+
+| Transport | Read | Write |
+|---|---:|---:|
+| SSH, OpenSSH default cipher (chacha20) | 491 MB/s | 640 MB/s |
+| SSH, AES-128-GCM (what DirectShare uses over Ethernet) | 854 MB/s | 773 MB/s |
+| **Fast mode** (USB-C) | **~2000 MB/s** | **~1400 MB/s** |
+
+How fast mode stays safe without encryption:
+
+- It's only used when **both** sides see the link as USB-C. A Thunderbolt link connects exactly two
+  computers, so there's nobody in between to listen. Over Ethernet (which could go through a
+  switch) DirectShare always uses SSH. A peer can't talk the other side into fast mode, because each
+  side checks its own link type.
+- The file server only accepts connections from the peer's address on that cable, and the peer has
+  to present a random **256-bit one-time token** sent over the handshake. Other users logged into
+  the peer computer don't have the token, so they get nothing.
+- After the token check the socket is handed straight to `sftp-server` on one side and to `sshfs`
+  on the other. No process copies the data in between.
+- Access rights are the same as in SSH mode: the server runs as the signed-in user.
+
+**Requirements:** USB4 or Thunderbolt 3/4 ports on both computers (check with
+`ls /sys/bus/thunderbolt/devices`: you need a `domain0`), a USB4/Thunderbolt-rated USB-C cable
+(a USB 2.0 charging cable won't do), and a kernel with `thunderbolt_net`, which every
+mainstream distribution has. Plain USB-C ports without USB4/Thunderbolt can't connect two computers.
+
+**If the USB-C row stays at "No computer connected"** after plugging in: check that the cable is a
+data cable, try `sudo modprobe thunderbolt_net`, and look at `dmesg | grep -i thunderbolt`.
+Some BIOSes have a "Thunderbolt security level" or "Thunderbolt networking" setting. Host-to-host
+networking needs it allowed.
 
 ## Development
 
@@ -151,12 +183,19 @@ directshare/
   gui.py         Qt interface
 tests/
   e2e_netns.sh   end-to-end test: two instances in two network namespaces joined by a virtual cable
+  test_unit.py   unit tests: fast-mode access control, cable detection
 tools/
   screenshots.py renders the README screenshots offscreen
 ```
 
+Unit tests:
+
+```bash
+python3 -m unittest discover -s tests
+```
+
 Run the end-to-end test. It needs sudo only to create the network namespaces, and it covers
-accept, decline and a pulled cable:
+accept, decline, USB-C fast mode, the fallback to SSH and a pulled cable:
 
 ```bash
 tests/e2e_netns.sh
@@ -168,8 +207,8 @@ Regenerate the screenshots:
 python3 tools/screenshots.py && python3 tools/screenshots.py --dark
 ```
 
-`DIRECTSHARE_HOME=<dir>` moves all state and mounts into `<dir>`, and `DIRECTSHARE_IFACES=if1,if2`
-picks the interfaces to use. Both are meant for testing.
+`DIRECTSHARE_HOME=<dir>` moves all state and mounts into `<dir>`, and `DIRECTSHARE_IFACES=if1,if2:usb-c`
+picks the interfaces to use and optionally their cable type. Both are meant for testing.
 
 ## License
 

@@ -31,7 +31,7 @@ sleep 3  # IPv6 duplicate address detection
 
 mkdir -p "$WORK/A" "$WORK/B" "$WORK/markers"
 
-run() {  # run <netns> <iface> <home> args...
+run() {  # run <netns> <iface[:kind]> <home> args...
     local ns=$1 ifc=$2 home=$3; shift 3
     # nsenter only switches the network namespace, so the FUSE mounts stay visible.
     $SUDO nsenter --net=/run/netns/$ns $SUDO -u "$ME" env DIRECTSHARE_HOME="$home" DIRECTSHARE_IFACES="$ifc" \
@@ -49,6 +49,18 @@ echo "== decline flow =="
 run dsB dsb0 "$WORK/B" --role responder --decline --marker-dir "$WORK/markers" & RESP=$!
 sleep 1
 run dsA dsa0 "$WORK/A" --role initiator --decline --marker-dir "$WORK/markers" || status=1
+wait $RESP || status=1
+
+echo "== USB-C fast mode (veth posing as a Thunderbolt link) =="
+run dsB dsb0:usb-c "$WORK/B" --role responder --expect-mode direct --marker-dir "$WORK/markers" & RESP=$!
+sleep 1
+run dsA dsa0:usb-c "$WORK/A" --role initiator --expect-mode direct --marker-dir "$WORK/markers" || status=1
+wait $RESP || status=1
+
+echo "== USB-C on one side only falls back to ssh =="
+run dsB dsb0 "$WORK/B" --role responder --marker-dir "$WORK/markers" & RESP=$!
+sleep 1
+run dsA dsa0:usb-c "$WORK/A" --role initiator --marker-dir "$WORK/markers" || status=1
 wait $RESP || status=1
 
 echo "== cable pulled =="

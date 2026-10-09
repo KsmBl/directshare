@@ -3,13 +3,16 @@
 Control protocol: one TCP connection per session over the cable, newline-delimited JSON.
 
     initiator                                responder
-    request {host,user,pubkey,hostkey,code} ->
-                                             (user is asked)
-                                          <- accept {user,pubkey,hostkey,ssh_port} | decline
+    request {host,user,pubkey,hostkey,nonce,modes} ->
+                                             (user is asked, starts its server)
+                                          <- accept {user,pubkey,hostkey,ssh_port,mode,token} | decline
     (starts its server)
-    ready {ssh_port}                       ->
+    ready {ssh_port,token}                 ->
     both mount each other; mounted {}     <->
     bye {}                                <->   (or the connection drops)
+
+mode is "ssh" (encrypted, any cable) or "direct" (unencrypted SFTP with a session token,
+only on point-to-point USB-C/Thunderbolt links, ~4x faster). The responder picks it.
 
 The share lives exactly as long as the control connection. When it ends - "Stop sharing",
 the app quits, the cable is pulled - both sides unmount and stop their servers.
@@ -60,6 +63,8 @@ class SessionInfo:
     mountpoint: Path | None = None
     peer_mounted: bool = False  # the other side has mounted us
     message: str = ""
+    mode: str = ""  # "ssh" or "direct"
+    link_kind: str = ""  # "ethernet" or "usb-c"
 
 
 @dataclass
@@ -228,6 +233,22 @@ class Engine:
             if session.peer.ifindex not in usable:
                 self._end(session, "The cable was disconnected", notify_peer=False)
 
+    def _link(self, ifindex: int) -> Link | None:
+        return next((l for l in self._links if l.ifindex == ifindex), None)
+
+    def _start_server(self, session: _Session, mode: str, peer_pubkey: str) -> dict:
+        """Start our file server for the peer; returns what the peer needs to mount it."""
+        peer = session.peer
+        address = self._local_address(peer.ifindex)
+        session.info.mode = mode
+        if mode == "direct":
+            server = sharing.DirectFileServer(session.dir)
+            session.server = server
+            port = server.start(address, peer.ifindex, peer.address)
+            return {"ssh_port": port, "token": server.token}
+        session.server = sharing.FileServer(session.dir)
+        return {"ssh_port": session.server.start(address, peer.ifname, peer.ifindex, peer_pubkey)}
+
     def _local_address(self, ifindex: int) -> str:
         link = next((l for l in self._links if l.ifindex == ifindex and l.usable), None)
         if link is None:
@@ -236,7 +257,8 @@ class Engine:
 
     def _new_session(self, peer: Peer, state: str, code: str) -> _Session:
         sdir = config.ensure_private_dir(config.runtime_dir() / f"session-{secrets.token_hex(4)}")
-        info = SessionInfo(peer.id, peer.title, peer.host, state, code=code)
+        link = self._link(peer.ifindex)
+        info = SessionInfo(peer.id, peer.title, peer.host, state, code=code, link_kind=link.kind if link else "")
         session = _Session(info, peer, sdir)
         with self._lock:
             self._sessions[peer.id] = session
@@ -274,9 +296,11 @@ class Engine:
             if session.ended:  # cancelled while connecting
                 session.channel.close()
                 return
+            link = self._link(peer.ifindex)
+            modes = ["direct", "ssh"] if link and link.kind == "usb-c" and sharing.sftp_server() else ["ssh"]
             session.channel.send({"t": "request", "v": config.PROTOCOL_VERSION, "id": self.id,
                                   "host": self.host, "user": self.user, "pubkey": pubkey,
-                                  "hostkey": sharing.host_key()[1], "nonce": nonce})
+                                  "hostkey": sharing.host_key()[1], "nonce": nonce, "modes": modes})
             reply = session.channel.recv(timeout=config.REQUEST_TIMEOUT + 10)
             if reply is None or reply.get("t") == "decline":
                 reason = "declined" if reply else "did not answer"
@@ -284,14 +308,15 @@ class Engine:
                 return
             if reply.get("t") != "accept":
                 raise sharing.ShareError("Unexpected answer from the other computer")
+            mode = str(reply.get("mode", "ssh"))
+            if mode not in modes:  # never let the peer talk us into unencrypted mode on a shared link
+                raise sharing.ShareError("The other computer asked for an unsupported connection mode")
             self._set_state(session, CONNECTING, "Starting file server…")
-            session.server = sharing.FileServer(session.dir)
-            port = session.server.start(self._local_address(peer.ifindex), peer.ifname, peer.ifindex,
-                                        str(reply.get("pubkey", "")))
+            served = self._start_server(session, mode, str(reply.get("pubkey", "")))
             if session.ended:
                 session.server.stop()
                 return
-            session.channel.send({"t": "ready", "ssh_port": port})
+            session.channel.send({"t": "ready", **served})
             self._mount_peer(session, reply)
             self._serve(session)
         except TimeoutError:
@@ -370,21 +395,20 @@ class Engine:
         session.channel = channel
         try:
             session.info.message = "Starting file server…"
-            self._publish(session)
-            session.server = sharing.FileServer(session.dir)
-            port = session.server.start(self._local_address(link.ifindex), link.name, link.ifindex,
-                                        str(msg["pubkey"]))
+            direct = (link.kind == "usb-c" and "direct" in (msg.get("modes") or [])
+                      and sharing.sftp_server() is not None)
+            mode = "direct" if direct else "ssh"
+            served = self._start_server(session, mode, str(msg["pubkey"]))
             if session.ended:
                 session.server.stop()
                 return
             pubkey = sharing.generate_key(session.dir / "id_ed25519", f"{self.user}@{self.host}")
             channel.send({"t": "accept", "user": self.user, "pubkey": pubkey,
-                          "hostkey": sharing.host_key()[1], "ssh_port": port})
+                          "hostkey": sharing.host_key()[1], "mode": mode, **served})
             ready = channel.recv(timeout=30)
             if not ready or ready.get("t") != "ready":
                 raise sharing.ShareError(f"{peer.title} cancelled")
-            self._mount_peer(session, {"user": peer.user, "hostkey": msg["hostkey"],
-                                       "ssh_port": ready["ssh_port"]})
+            self._mount_peer(session, {"user": peer.user, "hostkey": msg["hostkey"], **ready})
             self._serve(session)
         except TimeoutError:
             self._end(session, f"{peer.title} stopped responding", notify_peer=True)
@@ -422,8 +446,12 @@ class Engine:
         self._publish(session)
         mount = sharing.PeerMount(session.dir, session.peer.host)
         session.mount = mount
-        mount.mount(str(info["user"]), session.peer.address, session.peer.ifname, int(info["ssh_port"]),
-                    str(info["hostkey"]), session.dir / "id_ed25519")
+        if session.info.mode == "direct":
+            mount.mount_direct(session.peer.address, session.peer.ifindex, int(info["ssh_port"]),
+                               str(info.get("token", "")))
+        else:
+            mount.mount(str(info["user"]), session.peer.address, session.peer.ifname, int(info["ssh_port"]),
+                        str(info["hostkey"]), session.dir / "id_ed25519")
         if session.ended:  # stopped while mounting
             mount.unmount()
             return

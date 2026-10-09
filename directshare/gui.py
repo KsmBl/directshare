@@ -123,11 +123,12 @@ class LinkRow(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 2, 0, 2)
         icon = QLabel()
-        icon.setPixmap(QIcon.fromTheme("network-wired").pixmap(22, 22))
+        theme = "thunderbolt" if link.kind == "usb-c" else "network-wired"
+        icon.setPixmap(QIcon.fromTheme(theme, QIcon.fromTheme("network-wired")).pixmap(22, 22))
         row.addWidget(icon)
         row.addWidget(_label(f"<b>{link.label}</b> &nbsp;<span>{link.name}</span>"))
         if not link.carrier:
-            status = _label("No cable connected", "muted")
+            status = _label(link.note or "No cable connected", "muted")
         elif link.address:
             status = _label("● Cable connected", "good")
         else:
@@ -191,7 +192,10 @@ class PeerCard(QFrame):
             stop.clicked.connect(lambda: window.engine.stop_share(peer_id))
             actions.addWidget(stop)
         elif state == CONNECTED:
-            outer.addWidget(_label("● Sharing", "good"))
+            status = "● Sharing"
+            if session.mode == "direct":
+                status += "  ·  ⚡ Fast mode (USB-C direct link)"
+            outer.addWidget(_label(status, "good"))
             where = _pretty_path(session.mountpoint) if session.mountpoint else ""
             text = f"Files of <b>{host}</b> are at <b>{where}</b> and in your file manager's sidebar."
             text += (f"<br>{host} can see this computer's files too." if session.peer_mounted
@@ -410,7 +414,7 @@ class MainWindow(QMainWindow):
     def render_links(self):
         self._clear(self.links_box)
         if not self.links:
-            self.links_box.addWidget(_label("No Ethernet port found on this computer.", "muted"))
+            self.links_box.addWidget(_label("No Ethernet or USB4/Thunderbolt port found on this computer.", "muted"))
             return
         for link in self.links:
             self.links_box.addWidget(LinkRow(link, self.no_address_since.get(link.name), self.setup_link))
@@ -432,7 +436,8 @@ class MainWindow(QMainWindow):
             col.addWidget(pic)
             usable = any(link.usable for link in self.links)
             msg = ("Looking for another computer running DirectShare…" if usable
-                   else "Connect the other computer with an Ethernet cable.")
+                   else "Connect the other computer with an Ethernet cable, or a USB-C cable "
+                        "if both have USB4/Thunderbolt ports.")
             text = _label(msg, "muted", wrap=True)
             text.setAlignment(Qt.AlignmentFlag.AlignCenter)
             col.addWidget(text)
@@ -441,7 +446,8 @@ class MainWindow(QMainWindow):
             peer = online.get(pid)
             session = self.sessions.get(pid)
             title = peer.title if peer else session.peer_title
-            via = peer.ifname if peer else "cable"
+            link = next((l for l in self.links if peer and l.name == peer.ifname), None)
+            via = f"{link.label} ({peer.ifname})" if link and peer else (peer.ifname if peer else "cable")
             self.peers_box.addWidget(PeerCard(self, pid, title, via, peer is not None, session))
         self.peers_box.addStretch(1)
 

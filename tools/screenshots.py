@@ -73,9 +73,10 @@ def main():
     window = gui.MainWindow(FakeEngine(), bridge)
     window.statusBar().hide()
     link = Link("enp0s31f6", 2, "ethernet", True, "fe80::1")
+    usbc_idle = Link("", -1, "usb-c", False, None, "No computer connected")
     peer = Peer("p1", "laptop", "bob", "fe80::2", "enp0s31f6", 2, 47821)
 
-    window.on_links([link])
+    window.on_links([link, usbc_idle])
     window.on_peers([])
     window.show()
     window.resize(540, 520)
@@ -90,8 +91,20 @@ def main():
     window.on_session(SessionInfo("p1", peer.title, "laptop", CONNECTING, code="482 917",
                                   message="Mounting the other computer…"))
     window.on_session(SessionInfo("p1", peer.title, "laptop", CONNECTED, code="482 917",
-                                  mountpoint=Path.home() / "DirectShare" / "laptop", peer_mounted=True))
+                                  mountpoint=Path.home() / "DirectShare" / "laptop", peer_mounted=True,
+                                  mode="ssh", link_kind="ethernet"))
     shoot(window, "05-connected" + suffix)
+
+    # USB-C / Thunderbolt fast mode
+    tb = Link("thunderbolt0", 7, "usb-c", True, "fe80::3")
+    tb_peer = Peer("p2", "laptop", "bob", "fe80::4", "thunderbolt0", 7, 47821)
+    window.sessions.clear()
+    window.on_links([Link("enp0s31f6", 2, "ethernet", False, None), tb])
+    window.on_peers([tb_peer])
+    window.on_session(SessionInfo("p2", tb_peer.title, "laptop", CONNECTED, code="733 104",
+                                  mountpoint=Path.home() / "DirectShare" / "laptop", peer_mounted=True,
+                                  mode="direct", link_kind="usb-c"))
+    shoot(window, "06-usbc-fast" + suffix)
 
     request = IncomingRequest("r1", "p0", "workstation", "alice", "enp3s0", "482 917")
     dialog = gui.RequestDialog(window, request, "bob")
