@@ -137,17 +137,21 @@ def prepare_link(name: str) -> tuple[bool, str]:
     if not can_prepare():
         return False, f"NetworkManager not found. Bring the interface up manually: ip link set {name} up"
     profile = f"{config.APP_NAME} {name}"
+    # The cable must never compete with Wi-Fi: no default route, no DNS, lowest priority.
+    settings = ["ipv4.method", "link-local", "ipv6.method", "link-local",
+                "ipv4.never-default", "yes", "ipv6.never-default", "yes",
+                "ipv4.ignore-auto-dns", "yes", "ipv6.ignore-auto-dns", "yes",
+                "ipv4.route-metric", "20000", "ipv6.route-metric", "20000",
+                "connection.autoconnect", "no", "connection.permissions", f"user:{config.local_user()}"]
     existing = subprocess.run(["nmcli", "-g", "NAME", "connection", "show"],
                               capture_output=True, text=True).stdout.splitlines()
-    if profile not in existing:
-        add = subprocess.run(
-            ["nmcli", "connection", "add", "type", "ethernet", "ifname", name, "con-name", profile,
-             "ipv4.method", "link-local", "ipv6.method", "link-local",
-             "connection.autoconnect", "no", "connection.permissions", f"user:{config.local_user()}"],
-            capture_output=True, text=True,
-        )
-        if add.returncode != 0:
-            return False, add.stderr.strip() or "nmcli connection add failed"
+    if profile in existing:
+        cmd = ["nmcli", "connection", "modify", profile, *settings]  # upgrade profiles from older versions
+    else:
+        cmd = ["nmcli", "connection", "add", "type", "ethernet", "ifname", name, "con-name", profile, *settings]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return False, result.stderr.strip() or "nmcli failed"
     up = subprocess.run(["nmcli", "connection", "up", profile], capture_output=True, text=True, timeout=60)
     if up.returncode != 0:
         return False, up.stderr.strip() or "nmcli connection up failed"

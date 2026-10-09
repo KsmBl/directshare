@@ -123,6 +123,7 @@ sequenceDiagram
 |---|---|
 | "Cable connected, waiting for address…" doesn't go away | Click **Set up link**. It creates a private NetworkManager profile `DirectShare <iface>` that uses link-local addresses and doesn't wait for DHCP. |
 | The other computer never shows up | A firewall is probably blocking it. Allow the cable interface, e.g. `sudo ufw allow in on enp3s0` or `sudo firewall-cmd --zone=trusted --change-interface=enp3s0`. Ports used: UDP 47820, TCP 47821–47831. |
+| Wi-Fi turns off when the cable is plugged in | That's not DirectShare, it's usually TLP (`DEVICES_TO_DISABLE_ON_LAN_CONNECT`), a BIOS "LAN/WLAN switching" option or a NetworkManager dispatcher script. Run `tools/diagnose-wifi-drop.sh`: it checks the usual causes, watches what happens when you plug in the cable and names the culprit. |
 | IPv6 is disabled | DirectShare needs IPv6 on the cable interface: `sudo sysctl net.ipv6.conf.<iface>.disable_ipv6=0`. |
 | A folder in `~/DirectShare` says "Transport endpoint is not connected" | A crashed session left a stale mount. Starting DirectShare again cleans it up, or run `fusermount3 -uz ~/DirectShare/<name>`. |
 | Old network card without auto MDI-X | Very old 100 Mbit cards need a crossover cable. Anything from the last 15 years works with a normal cable. |
