@@ -1,0 +1,69 @@
+hawky@archbtw2 ~/W/directshare (main)> ./tools/diagnose-wifi-drop.sh 
+
+== System ==
+Arch Linux
+7.2.6-arch2-1
+nmcli-Werkzeug, Version 1.58.1-1
+
+== 1. TLP radio switching ==
+not configured
+
+== 2. ConnMan ==
+not configured
+
+== 3. NetworkManager dispatcher scripts touching Wi-Fi ==
+done
+
+== 4. Wired profiles that would take over the default route ==
+Kabelgebundene Verbindung 1      ipv4=auto never-default=no metric=-1 autoconnect=yes
+
+== Before plugging in ==
+wlp148s0:wifi:connected
+lo:loopback:connected (externally)
+p2p-dev-wlp148s0:wifi-p2p:disconnected
+enp0s31f6:ethernet:unavailable
+default via 192.168.1.1 dev wlp148s0 proto dhcp src 192.168.1.239 metric 600 
+
+>>> Now plug in the Ethernet cable (other end connected to the other computer), wait until Wi-Fi drops, then press Enter. 
+
+== After plugging in ==
+enp0s31f6:ethernet:connecting (getting IP configuration)
+lo:loopback:connected (externally)
+wlp148s0:wifi:unavailable
+p2p-dev-wlp148s0:wifi-p2p:unavailable
+
+== Log around the plug-in ==
+[606023.373265] archbtw2 NetworkManager[934]: <info>  [1791533373.7602] device (enp0s31f6): carrier: link connected
+[606023.373396] archbtw2 NetworkManager[934]: <info>  [1791533373.7603] device (enp0s31f6): state change: unavailable -> disconnected (reason 'carrier-changed', managed-type: 'full')
+[606023.374138] archbtw2 NetworkManager[934]: <info>  [1791533373.7611] device (enp0s31f6): state change: disconnected -> prepare (reason 'none', managed-type: 'full')
+[606023.374234] archbtw2 NetworkManager[934]: <info>  [1791533373.7612] device (enp0s31f6): state change: prepare -> config (reason 'none', managed-type: 'full')
+[606023.374541] archbtw2 NetworkManager[934]: <info>  [1791533373.7615] device (enp0s31f6): state change: config -> ip-config (reason 'none', managed-type: 'full')
+[606028.389169] archbtw2 wpa_supplicant[1074]: rfkill: WLAN hard blocked
+[606028.389179] archbtw2 wpa_supplicant[1074]: rfkill: WLAN hard blocked
+[606028.392660] archbtw2 NetworkManager[934]: <info>  [1791533378.7796] manager: rfkill: Wi-Fi now disabled by radio killswitch
+[606028.392739] archbtw2 NetworkManager[934]: <info>  [1791533378.7797] device (wlp148s0): state change: activated -> unavailable (reason 'none', managed-type: 'full')
+[606028.392809] archbtw2 NetworkManager[934]: <info>  [1791533378.7798] dhcp4 (wlp148s0): canceled DHCP transaction
+[606028.392814] archbtw2 NetworkManager[934]: <info>  [1791533378.7798] dhcp4 (wlp148s0): activation: beginning transaction (timeout in 45 seconds)
+[606028.392818] archbtw2 NetworkManager[934]: <info>  [1791533378.7798] dhcp4 (wlp148s0): state changed no lease
+[606028.428713] archbtw2 wpa_supplicant[1074]: wlp148s0: CTRL-EVENT-DISCONNECTED bssid=28:ee:52:3d:43:60 reason=3 locally_generated=1
+[606028.428876] archbtw2 wpa_supplicant[1074]: wlp148s0: CTRL-EVENT-DSCP-POLICY clear_all
+[606028.446873] archbtw2 NetworkManager[934]: <info>  [1791533378.8338] device (wlp148s0): set-hw-addr: set MAC address to 7A:D3:37:51:C6:D2 (scanning)
+[606028.447634] archbtw2 wpa_supplicant[1074]: p2p-dev-wlp148s: CTRL-EVENT-DSCP-POLICY clear_all
+[606028.447725] archbtw2 wpa_supplicant[1074]: p2p-dev-wlp148s: CTRL-EVENT-DSCP-POLICY clear_all
+[606028.447738] archbtw2 wpa_supplicant[1074]: nl80211: deinit ifname=p2p-dev-wlp148s disabled_11b_rates=0
+[606028.458168] archbtw2 wpa_supplicant[1074]: wlp148s0: CTRL-EVENT-DSCP-POLICY clear_all
+[606028.458646] archbtw2 NetworkManager[934]: <info>  [1791533378.8456] device (p2p-dev-wlp148s0): state change: disconnected -> unavailable (reason 'supplicant-failed', managed-type: 'full')
+[606028.458684] archbtw2 NetworkManager[934]: <warn>  [1791533378.8456] device (p2p-dev-wlp148s0): error setting IPv4 forwarding to '0': Die Ressource ist zur Zeit nicht verfügbar
+[606028.476316] archbtw2 wpa_supplicant[1074]: wlp148s0: CTRL-EVENT-DSCP-POLICY clear_all
+[606028.476320] archbtw2 wpa_supplicant[1074]: nl80211: deinit ifname=wlp148s0 disabled_11b_rates=0
+[606023.373166] archbtw2 kernel: e1000e 0000:00:1f.6 enp0s31f6: NIC Link is Up 1000 Mbps Full Duplex, Flow Control: Rx/Tx
+[606028.389055] archbtw2 kernel: iwlwifi 0000:94:00.0: RF_KILL bit toggled to disable radio.
+[606028.389464] archbtw2 kernel: iwlwifi 0000:94:00.0: reporting RF_KILL (radio disabled)
+[606028.389735] archbtw2 kernel: wlp148s0: deauthenticating from 28:ee:52:3d:43:60 by local choice (Reason: 3=DEAUTH_LEAVING)
+[FOUND] The log shows software turning Wi-Fi off (see lines above).
+note: the access point or the driver deauthenticated (see lines above)
+
+== Result ==
+See the [FOUND] lines above.
+hawky@archbtw2 ~/W/directshare (main)> 
+

@@ -11,7 +11,37 @@ bold() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 hit() { printf '\033[31m[FOUND]\033[0m %s\n' "$*"; FOUND=1; }
 FOUND=0
 
+# Prints "soft=<0|1> hard=<0|1>" for every Wi-Fi radio.
+wifi_rfkill() {
+    for r in /sys/class/rfkill/rfkill*; do
+        [ "$(cat "$r/type" 2>/dev/null)" = wlan ] || continue
+        echo "$(cat "$r/name"): soft=$(cat "$r/soft") hard=$(cat "$r/hard")"
+    done
+}
+
+bios_hint() {
+    local vendor="$1"
+    case "$vendor" in
+        *Dell*)
+            local attr=/sys/class/firmware-attributes/dell-wmi-sysman/attributes/WlanAutoSense
+            if [ -d "$attr" ]; then
+                echo "      Dell 'Control WLAN radio' (WlanAutoSense) can be switched off from Linux:"
+                echo "        echo Disabled | sudo tee $attr/current_value"
+                echo "      then reboot (the BIOS applies it at the next start). If a BIOS admin password is set, first:"
+                echo "        echo -n '<password>' | sudo tee /sys/class/firmware-attributes/dell-wmi-sysman/authentication/Admin/current_password"
+            else
+                echo "      Dell: BIOS Setup (F2) > Connection / Power Management > 'Wireless Radio Control' -> untick 'Control WLAN radio'"
+            fi ;;
+        *HP*|*Hewlett*) echo "      HP: BIOS Setup > Advanced > Built-In Device Options > 'LAN/WLAN Auto Switching' -> disable" ;;
+        *LENOVO*|*Lenovo*) echo "      Lenovo: BIOS Setup > Config > Network > 'Wireless Auto Disconnection' (ThinkPad) or 'LAN/WLAN switching' -> disable" ;;
+        *Fujitsu*|*FUJITSU*) echo "      Fujitsu: BIOS Setup > Advanced > 'LAN/WLAN switching' -> disable" ;;
+        *)         echo "      Look in the BIOS/UEFI setup for 'LAN/WLAN switching', 'Wireless radio control' or 'Wireless auto disconnection' and disable it." ;;
+    esac
+}
+
 bold "System"
+VENDOR="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)"
+echo "Hardware: $VENDOR $(cat /sys/class/dmi/id/product_name 2>/dev/null) $(cat /sys/class/dmi/id/product_version 2>/dev/null)"
 . /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"
 uname -r
 command -v nmcli >/dev/null && nmcli --version
@@ -67,8 +97,21 @@ if command -v nmcli >/dev/null; then
     done
 fi
 
+bold "5. Firmware LAN/WLAN switching"
+attr=/sys/class/firmware-attributes/dell-wmi-sysman/attributes/WlanAutoSense
+if [ -d "$attr" ]; then
+    value="$(cat "$attr/current_value" 2>/dev/null || sudo -n cat "$attr/current_value" 2>/dev/null)"
+    echo "Dell 'Control WLAN radio' (WlanAutoSense): ${value:-unknown, needs root to read}"
+    if [ "$value" = Enabled ]; then
+        hit "The BIOS switches Wi-Fi off whenever the built-in Ethernet port has a link."
+        bios_hint "$VENDOR"
+    fi
+else
+    echo "no switchable firmware option found (check the BIOS setup manually if Wi-Fi gets hard-blocked)"
+fi
+
 bold "Before plugging in"
-rfkill list 2>/dev/null | grep -A2 -i wlan
+wifi_rfkill
 command -v nmcli >/dev/null && nmcli -t -f DEVICE,TYPE,STATE device
 ip -4 route show default
 
@@ -77,12 +120,16 @@ read -r -p ">>> Now plug in the Ethernet cable (other end connected to the other
 since="$(date -d '-90 seconds' '+%Y-%m-%d %H:%M:%S')"
 
 bold "After plugging in"
-rfkill list 2>/dev/null | grep -A2 -i wlan
-if rfkill list 2>/dev/null | grep -A2 -i wlan | grep -q 'Soft blocked: yes'; then
+after="$(wifi_rfkill)"
+echo "$after"
+if echo "$after" | grep -q 'hard=1'; then
+    hit "Wi-Fi is HARD-blocked: the BIOS/firmware switched the radio off because a LAN cable was connected."
+    echo "      Linux can't undo a hard block. Disable the option in the BIOS setup:"
+    bios_hint "$VENDOR"
+    echo "      Workaround without BIOS changes: use a USB Ethernet adapter for the direct cable."
+    echo "      The firmware only watches the built-in Ethernet port."
+elif echo "$after" | grep -q 'soft=1'; then
     hit "Wi-Fi is soft-blocked (switched off by software: TLP, a script or a desktop setting)."
-fi
-if rfkill list 2>/dev/null | grep -A2 -i wlan | grep -q 'Hard blocked: yes'; then
-    hit "Wi-Fi is hard-blocked: the BIOS/firmware turned it off. Look for 'LAN/WLAN switching' or 'Wireless radio control' in the BIOS setup and disable it."
 fi
 command -v nmcli >/dev/null && nmcli -t -f DEVICE,TYPE,STATE device
 ip -4 route show default
@@ -100,10 +147,16 @@ if [ -z "$logs" ]; then
     echo "(no access to the journal; run again with sudo for log output)"
 else
     echo "$logs" | grep -iE 'wifi|wlan|wlp|wireless|rfkill|radio|disconnect|deauth|tlp|state change|link' | tail -40
-    if echo "$logs" | grep -qiE 'tlp.*(disable|wifi)|radio.*wifi.*off|wifi.*disabled'; then
+    if echo "$logs" | grep -qiE 'RF_KILL bit toggled|hard blocked'; then
+        if ! echo "$after" | grep -q 'hard=1'; then  # not already reported above
+            hit "The log shows the firmware hard-blocking Wi-Fi (RF_KILL) right after the cable came up."
+            bios_hint "$VENDOR"
+            echo "      Workaround without BIOS changes: use a USB Ethernet adapter for the direct cable."
+        fi
+    elif echo "$logs" | grep -qiE 'tlp.*(disable|wifi)|soft blocked|rfkill.*block'; then
         hit "The log shows software turning Wi-Fi off (see lines above)."
     fi
-    if echo "$logs" | grep -qiE 'deauth|reason=3'; then
+    if echo "$logs" | grep -qiE 'deauth|reason=3' && ! echo "$logs" | grep -qiE 'RF_KILL|blocked'; then
         echo "note: the access point or the driver deauthenticated (see lines above)"
     fi
 fi
